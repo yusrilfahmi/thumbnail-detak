@@ -22,7 +22,7 @@ TARGET_ASPECT_RATIO = TARGET_WIDTH / TARGET_HEIGHT  # 16:9 = 1.778
 
 def extract_instagram_images(url: str) -> list[str]:
     """
-    Extract image URLs from an Instagram post.
+    Extract image URLs from an Instagram post using multiple methods.
     
     Args:
         url: Instagram post URL
@@ -33,8 +33,10 @@ def extract_instagram_images(url: str) -> list[str]:
     Raises:
         Exception: If extraction fails
     """
-    # Clean up the URL
+    # Clean up the URL and ensure it has https
     url = url.strip()
+    if not url.startswith('http'):
+        url = 'https://' + url
     
     # Validate Instagram URL
     if not re.match(r'https?://(www\.)?instagram\.com/(p|reel)/[\w-]+/?', url):
@@ -46,12 +48,22 @@ def extract_instagram_images(url: str) -> list[str]:
         raise Exception("Could not extract post ID from Instagram URL")
     
     shortcode = match.group(2)
+    post_type = match.group(1)
     
+    # More realistic browser headers
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
         'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
     }
     
     image_urls = []
@@ -136,8 +148,39 @@ def extract_instagram_images(url: str) -> list[str]:
                     if clean_url not in image_urls:
                         image_urls.append(clean_url)
         
+        # Method 4: Try Instagram oEmbed API (often more reliable)
         if not image_urls:
-            raise Exception("Could not extract images from Instagram post. The post may be private or Instagram is blocking requests.")
+            try:
+                oembed_url = f"https://graph.facebook.com/v12.0/instagram_oembed?url=https://www.instagram.com/{post_type}/{shortcode}/&access_token=&fields=thumbnail_url"
+                response = requests.get(oembed_url, headers={'User-Agent': headers['User-Agent']}, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'thumbnail_url' in data:
+                        thumb_url = data['thumbnail_url']
+                        # Upgrade to higher resolution
+                        high_res_url = thumb_url.replace('/s150x150/', '/s1080x1080/')
+                        image_urls.append(high_res_url)
+            except:
+                pass
+        
+        # Method 5: Alternative oEmbed endpoint
+        if not image_urls:
+            try:
+                oembed_url2 = f"https://api.instagram.com/oembed/?url=https://www.instagram.com/{post_type}/{shortcode}/"
+                response = requests.get(oembed_url2, headers={'User-Agent': headers['User-Agent']}, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'thumbnail_url' in data:
+                        thumb_url = data['thumbnail_url']
+                        high_res_url = thumb_url.replace('/s150x150/', '/s1080x1080/').replace('/s320x320/', '/s1080x1080/')
+                        image_urls.append(high_res_url)
+            except:
+                pass
+        
+        if not image_urls:
+            raise Exception("Could not extract images from Instagram post. The post may be private or Instagram is blocking requests. Try using a direct image URL instead.")
         
         return image_urls
         
@@ -188,38 +231,132 @@ def load_image_from_url(url: str) -> np.ndarray:
 
 def detect_faces(img: np.ndarray) -> list:
     """
-    Detect faces in an image using Haar Cascade.
+    Detect faces in an image using multiple Haar Cascades for better accuracy.
     
     Args:
         img: OpenCV image (BGR format)
         
     Returns:
-        List of detected face rectangles (x, y, w, h), sorted by area (largest first)
+        List of validated face rectangles (x, y, w, h), sorted by quality score
     """
-    # Load Haar Cascade classifier
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    )
+    h, w = img.shape[:2]
+    
+    # Load multiple cascade classifiers for better detection
+    cascades = [
+        ('frontal_default', cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'),
+        ('frontal_alt', cv2.data.haarcascades + 'haarcascade_frontalface_alt.xml'),
+        ('frontal_alt2', cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml'),
+    ]
     
     # Convert to grayscale for detection
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Detect faces with multiple scale factors for better detection
-    faces = face_cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(30, 30),
-        flags=cv2.CASCADE_SCALE_IMAGE
-    )
+    # Apply histogram equalization for better detection in varied lighting
+    gray = cv2.equalizeHist(gray)
     
-    if len(faces) == 0:
+    all_faces = []
+    
+    # Try each cascade with different parameters
+    for cascade_name, cascade_path in cascades:
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+        
+        # Try multiple scale factors for robustness
+        for scale_factor in [1.05, 1.1, 1.2]:
+            faces = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=scale_factor,
+                minNeighbors=4,
+                minSize=(50, 50),  # Increased min size to filter false positives
+                maxSize=(int(w * 0.8), int(h * 0.8)),  # Avoid detecting entire image
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            
+            for face in faces:
+                all_faces.append(face)
+    
+    if len(all_faces) == 0:
         return []
     
-    # Sort by area (largest first) - prioritize the main subject
-    faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
+    # Remove duplicate detections (merge overlapping boxes)
+    filtered_faces = []
+    for face in all_faces:
+        fx, fy, fw, fh = face
+        
+        # Check if this face overlaps significantly with existing faces
+        is_duplicate = False
+        for existing in filtered_faces:
+            ex, ey, ew, eh = existing
+            
+            # Calculate IoU (Intersection over Union)
+            x1 = max(fx, ex)
+            y1 = max(fy, ey)
+            x2 = min(fx + fw, ex + ew)
+            y2 = min(fy + fh, ey + eh)
+            
+            if x2 > x1 and y2 > y1:
+                intersection = (x2 - x1) * (y2 - y1)
+                union = fw * fh + ew * eh - intersection
+                iou = intersection / union if union > 0 else 0
+                
+                if iou > 0.3:  # If overlap > 30%, consider it duplicate
+                    is_duplicate = True
+                    break
+        
+        if not is_duplicate:
+            filtered_faces.append(face)
     
-    return faces
+    # Validate and score faces
+    valid_faces = []
+    for face in filtered_faces:
+        fx, fy, fw, fh = face
+        
+        # Skip faces that are too close to edges (likely false positives)
+        margin = 10
+        if fx < margin or fy < margin or fx + fw > w - margin or fy + fh > h - margin:
+            continue
+        
+        # Skip faces with unusual aspect ratios
+        aspect_ratio = fw / fh
+        if aspect_ratio < 0.5 or aspect_ratio > 2.0:
+            continue
+        
+        # Calculate quality score based on:
+        # 1. Size (larger is better, but not too large)
+        # 2. Position (faces in upper half are more likely correct)
+        # 3. Aspect ratio (closer to 1:1 is better)
+        
+        face_area = fw * fh
+        image_area = w * h
+        size_ratio = face_area / image_area
+        
+        # Prefer faces that are 5-40% of image area
+        if size_ratio < 0.05:
+            size_score = size_ratio / 0.05  # 0-1
+        elif size_ratio > 0.4:
+            size_score = 0.4 / size_ratio  # 0-1
+        else:
+            size_score = 1.0
+        
+        # Prefer faces in upper 60% of image
+        face_center_y = fy + fh / 2
+        position_score = 1.0 if face_center_y < h * 0.6 else 0.5
+        
+        # Prefer square-ish faces
+        aspect_score = 1.0 - abs(aspect_ratio - 1.0)
+        
+        # Combined quality score
+        quality_score = (size_score * 0.5 + position_score * 0.3 + aspect_score * 0.2)
+        
+        valid_faces.append((face, quality_score))
+    
+    if len(valid_faces) == 0:
+        return []
+    
+    # Sort by quality score (highest first)
+    valid_faces.sort(key=lambda x: x[1], reverse=True)
+    
+    # Return only the face rectangles (without scores)
+    return [face for face, score in valid_faces]
 
 
 def smart_crop_with_face(img: np.ndarray, faces: list) -> np.ndarray:
@@ -227,11 +364,11 @@ def smart_crop_with_face(img: np.ndarray, faces: list) -> np.ndarray:
     Smart crop image to 1920x1080 with face as the main focus.
     
     The image is first scaled to ensure it can fill 1920x1080,
-    then cropped around the detected face (or center if no face).
+    then cropped around the detected face with safety margins to prevent cutting heads.
     
     Args:
         img: Original OpenCV image (BGR format)
-        faces: List of detected face rectangles
+        faces: List of detected face rectangles (sorted by quality)
         
     Returns:
         Cropped image at 1920x1080
@@ -253,7 +390,7 @@ def smart_crop_with_face(img: np.ndarray, faces: list) -> np.ndarray:
     
     # Calculate crop position based on face detection
     if len(faces) > 0:
-        # Use the largest face for positioning
+        # Use the best quality face for positioning
         face = faces[0]
         face_x, face_y, face_w, face_h = face
         
@@ -263,18 +400,26 @@ def smart_crop_with_face(img: np.ndarray, faces: list) -> np.ndarray:
         scaled_face_w = int(face_w * scale)
         scaled_face_h = int(face_h * scale)
         
-        # Calculate face center
+        # Calculate face TOP position (not center)
+        # This is critical to prevent cutting off heads
+        face_top_y = scaled_face_y
         face_center_x = scaled_face_x + scaled_face_w // 2
-        face_center_y = scaled_face_y + scaled_face_h // 2
         
-        # Position face at rule of thirds (top 1/3 for Y, center for X)
-        # This keeps the head from being cut off
+        # Add safety margin above the face to include full head/hair
+        # Usually hair and forehead extend 0.5x face height above detected face box
+        safety_margin_top = int(scaled_face_h * 0.6)
+        
+        # Position the face so that:
+        # - The TOP of the face (with margin) is at ~15% from top of frame
+        # - This ensures full head is visible and positioned nicely
+        target_face_y_from_top = int(TARGET_HEIGHT * 0.15)
+        
+        # Calculate crop Y to position face top at target position
+        crop_y = (face_top_y - safety_margin_top) - target_face_y_from_top
+        
+        # Center the face horizontally
         target_face_x = TARGET_WIDTH // 2
-        target_face_y = TARGET_HEIGHT // 3
-        
-        # Calculate crop start position
         crop_x = face_center_x - target_face_x
-        crop_y = face_center_y - target_face_y
         
     else:
         # No face detected - center crop
