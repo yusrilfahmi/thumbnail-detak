@@ -5,11 +5,11 @@ A Streamlit web application for processing news images to perfect **1920x1080 (1
 ## Features
 
 - 🔗 **Direct Image URL Support** - Paste any image URL to process
-- 📸 **Instagram Integration** - Extract and process images from Instagram posts
-- 👤 **Smart Face Detection** - Uses OpenCV Haar Cascade to detect faces
-- ✂️ **Intelligent Cropping** - Positions detected faces at rule of thirds
+- 👤 **Advanced Face Detection** - Multi-cascade detection with quality scoring
+- ✂️ **Intelligent Cropping** - Positions detected faces perfectly with safety margins
 - 📝 **Custom Titles** - Set custom filenames for downloads
 - 📥 **PNG Download** - Download processed images in high quality
+- 🎯 **Smart Validation** - Filters false positives for accurate face detection
 
 ## Tech Stack
 
@@ -96,27 +96,32 @@ thumbnail-detak/
 
 ## Usage
 
-1. **Direct Image URL:**
-   - Paste any image URL
+1. **Process Image:**
+   - Paste direct image URL (JPG, PNG, WebP)
+   - Optionally enter a custom title
    - Click "Process Image"
    - Download the result
 
-2. **Instagram Post:**
-   - Paste Instagram post URL (e.g., `https://www.instagram.com/p/XXXXX/`)
-   - Click "Fetch Instagram Images"
-   - Select an image from the carousel
-   - Download the result
-
-3. **Custom Title:**
+2. **Custom Title:**
    - Enter a title in the "Title" field
    - The download filename will use this title
-   - Leave empty for default "crop 1920x1080"
+   - Leave empty for default "crop_1920x1080"
+
+## Face Detection Improvements
+
+The app uses advanced face detection with:
+
+- **Multi-Cascade Detection:** 3 different Haar Cascade classifiers
+- **Quality Scoring:** Validates faces based on size, position, and aspect ratio
+- **Safety Margins:** 60% top margin ensures heads are never cut off
+- **Smart Positioning:** Faces positioned at 15% from top for optimal framing
+- **False Positive Filtering:** Removes incorrect detections (body parts, objects)
 
 ## Notes
 
-- Instagram extraction only works with **public posts**
-- For best results, use high-resolution source images
-- The largest detected face is used as the main subject
+- Face detection works best with **high-resolution images**
+- Multiple people in frame: selects **highest quality face** (usually main subject)
+- If no face detected: falls back to **center crop**
 
 ## License
 
