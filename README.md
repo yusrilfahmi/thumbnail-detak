@@ -9,7 +9,7 @@ A Streamlit web application for processing news images to perfect **1920x1080 (1
 - ✂️ **Intelligent Cropping** - Positions detected faces perfectly with safety margins
 - 📝 **Custom Titles** - Set custom filenames for downloads
 - 📥 **PNG Download** - Download processed images in high quality
-- 🎯 **Smart Validation** - Filters false positives for accurate face detection
+- 🎯 **Smart Validation** - Filters false positives for accurate face detection.
 
 ## Tech Stack
 
