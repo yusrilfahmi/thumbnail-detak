@@ -568,8 +568,8 @@ def main():
                         if matching_tags:
                             st.success(f"✅ Found {len(matching_tags)} matching tag(s)!")
                             
-                            # Display as comma-separated
-                            tags_output = ", ".join(matching_tags)
+                            # Display as comma-separated with trailing comma
+                            tags_output = ", ".join(matching_tags) + ","
                             
                             st.divider()
                             st.markdown("### 📋 Matching Tags:")
