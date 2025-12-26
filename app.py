@@ -11,6 +11,8 @@ from PIL import Image
 import requests
 from io import BytesIO
 import re
+import os
+import subprocess
 
 # Constants
 TARGET_WIDTH = 1920
@@ -277,6 +279,89 @@ def get_download_filename(title: str = '') -> str:
     return "crop_1920x1080.png"
 
 
+# ============== Tag Finder Functions ==============
+
+def load_tags_from_file(filepath: str = "tags.txt") -> list:
+    """
+    Load tags from tags.txt file.
+    
+    Args:
+        filepath: Path to tags file
+        
+    Returns:
+        List of tag strings
+    """
+    if not os.path.exists(filepath):
+        return []
+    
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            tags = [line.strip() for line in f if line.strip()]
+        return tags
+    except Exception as e:
+        st.error(f"Error loading tags: {e}")
+        return []
+
+
+def find_matching_tags(article_text: str, tags: list) -> list:
+    """
+    Find tags that match COMPLETE WORDS in the article text (case insensitive).
+    Uses word boundaries to prevent false matches like 'emas' in 'memastikan'.
+    
+    Args:
+        article_text: The article text to search in
+        tags: List of available tags
+        
+    Returns:
+        List of matching tags
+    """
+    if not article_text or not tags:
+        return []
+    
+    matching_tags = []
+    
+    for tag in tags:
+        # Escape special regex characters in tag
+        escaped_tag = re.escape(tag)
+        
+        # Create pattern with word boundaries
+        # \b ensures we match complete words only
+        pattern = r'\b' + escaped_tag + r'\b'
+        
+        # Case insensitive search
+        if re.search(pattern, article_text, re.IGNORECASE):
+            if tag not in matching_tags:  # Avoid duplicates
+                matching_tags.append(tag)
+    
+    return matching_tags
+
+
+def update_tags_from_detak() -> tuple[bool, str]:
+    """
+    Run testing.py to update tags from detak.media.
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    try:
+        # Run testing.py script
+        result = subprocess.run(
+            ['python', 'testing.py'],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode == 0:
+            return True, "Tags updated successfully!"
+        else:
+            return False, f"Error updating tags: {result.stderr}"
+    except subprocess.TimeoutExpired:
+        return False, "Update timeout - please try again"
+    except Exception as e:
+        return False, f"Error running update: {str(e)}"
+
+
 # ============== Streamlit UI ==============
 
 def main():
@@ -314,118 +399,223 @@ def main():
     """, unsafe_allow_html=True)
     
     # Header
-    st.markdown("<h1 class='main-header'>🖼️ Smart News Image Resizer</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='main-header'>🖼️ Smart News Tools</h1>", unsafe_allow_html=True)
     st.markdown(
-        "<p style='text-align: center; color: #666;'>Process news images to perfect 1920x1080 (16:9) resolution with intelligent face detection</p>",
+        "<p style='text-align: center; color: #666;'>Image Resizer & Tag Finder for News Content</p>",
         unsafe_allow_html=True
     )
     
     st.divider()
     
-    # Input Section
-    url_input = st.text_input(
-        "🔗 Image URL",
-        placeholder="Paste the direct image URL here (e.g., https://example.com/image.jpg)",
-        help="Enter the direct URL to an image. Supports JPG, PNG, and WebP formats."
-    )
+    # Create tabs for different features
+    tab1, tab2 = st.tabs(["🖼️ Image Resizer", "🏷️ Tag Finder"])
     
-    # Title input for download filename
-    title_input = st.text_input(
-        "📝 Title (Optional)",
-        placeholder="Enter title for the download filename (e.g., Persib vs PSM)",
-        help="This will be used as the download filename. Leave empty for default 'crop 1920x1080'"
-    )
-    
-    # Store title in session state
-    if title_input:
-        st.session_state['download_title'] = title_input
-    elif 'download_title' not in st.session_state:
-        st.session_state['download_title'] = ''
-    
-    # Process button
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col2:
-        process_button = st.button("🚀 Process Image", type="primary", use_container_width=True)
-    
-    # Handle image URL
-    if process_button:
-        if not url_input:
-            st.error("⚠️ Please enter an image URL")
-        elif not url_input.startswith(('http://', 'https://')):
-            st.error("⚠️ Please enter a valid URL starting with http:// or https://")
-        else:
-            try:
-                with st.spinner("📥 Downloading image..."):
-                    original_img = load_image_from_url(url_input)
-                
-                original_h, original_w = original_img.shape[:2]
-                
-                with st.spinner("🔍 Detecting faces and processing..."):
-                    processed_img, method = process_image(original_img)
-                
-                st.session_state['processed_image'] = processed_img
-                st.session_state['processing_method'] = method
-                
-                st.success("✅ Image processed successfully!")
-                
-                display_results(original_img, processed_img, method, original_w, original_h)
-                
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-    
-    # Show previously processed image if exists
-    elif 'processed_image' in st.session_state:
+    # ============== TAB 1: IMAGE RESIZER ==============
+    with tab1:
+        url_input = st.text_input(
+            "🔗 Image URL",
+            placeholder="Paste the direct image URL here (e.g., https://example.com/image.jpg)",
+            help="Enter the direct URL to an image. Supports JPG, PNG, and WebP formats."
+        )
+        
+        # Title input for download filename
+        title_input = st.text_input(
+            "📝 Title (Optional)",
+            placeholder="Enter title for the download filename (e.g., Persib vs PSM)",
+            help="This will be used as the download filename. Leave empty for default 'crop 1920x1080'"
+        )
+        
+        # Store title in session state
+        if title_input:
+            st.session_state['download_title'] = title_input
+        elif 'download_title' not in st.session_state:
+            st.session_state['download_title'] = ''
+        
+        # Process button
+        col1, col2, col3 = st.columns([1, 2, 1])
+        
+        with col2:
+            process_button = st.button("🚀 Process Image", type="primary", use_container_width=True)
+        
+        # Handle image URL
+        if process_button:
+            if not url_input:
+                st.error("⚠️ Please enter an image URL")
+            elif not url_input.startswith(('http://', 'https://')):
+                st.error("⚠️ Please enter a valid URL starting with http:// or https://")
+            else:
+                try:
+                    with st.spinner("📥 Downloading image..."):
+                        original_img = load_image_from_url(url_input)
+                    
+                    original_h, original_w = original_img.shape[:2]
+                    
+                    with st.spinner("🔍 Detecting faces and processing..."):
+                        processed_img, method = process_image(original_img)
+                    
+                    st.session_state['processed_image'] = processed_img
+                    st.session_state['processing_method'] = method
+                    
+                    st.success("✅ Image processed successfully!")
+                    
+                    display_results(original_img, processed_img, method, original_w, original_h)
+                    
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+        
+        # Show previously processed image if exists
+        elif 'processed_image' in st.session_state:
+            st.divider()
+            st.markdown("### 📋 Previous Result")
+            st.markdown(f"**🧠 Processing Method:** {st.session_state.get('processing_method', 'N/A')}")
+            
+            st.image(
+                convert_cv2_to_pil(st.session_state['processed_image']),
+                caption="Previously processed image (1920x1080)",
+                use_container_width=True
+            )
+            
+            download_bytes = get_image_download_bytes(st.session_state['processed_image'])
+            download_title = st.session_state.get('download_title', '')
+            filename = get_download_filename(download_title)
+            
+            st.download_button(
+                label="📥 Download PNG",
+                data=download_bytes,
+                file_name=filename,
+                mime="image/png",
+                type="primary",
+                use_container_width=True
+            )
+        
+        # Footer with instructions
         st.divider()
-        st.markdown("### 📋 Previous Result")
-        st.markdown(f"**🧠 Processing Method:** {st.session_state.get('processing_method', 'N/A')}")
-        
-        st.image(
-            convert_cv2_to_pil(st.session_state['processed_image']),
-            caption="Previously processed image (1920x1080)",
-            use_container_width=True
-        )
-        
-        download_bytes = get_image_download_bytes(st.session_state['processed_image'])
-        download_title = st.session_state.get('download_title', '')
-        filename = get_download_filename(download_title)
-        
-        st.download_button(
-            label="📥 Download PNG",
-            data=download_bytes,
-            file_name=filename,
-            mime="image/png",
-            type="primary",
-            use_container_width=True
-        )
+        with st.expander("ℹ️ How it works"):
+            st.markdown("""
+            ### Smart Resizing Logic
+            
+            This tool uses intelligent algorithms to process images for optimal 16:9 display:
+            
+            - **Face Detection:** Uses advanced multi-cascade detection with quality scoring
+            - **Smart Crop:** Scales image to fill 1920x1080, then crops with face positioned perfectly
+            - **Safety Margins:** Ensures heads are never cut off with 60% top margin
+            - **Center Crop:** If no face is detected, performs a center crop
+            
+            ### Features
+            
+            - ✅ Multi-cascade face detection for better accuracy
+            - ✅ Quality scoring to filter false positives
+            - ✅ Smart positioning with safety margins
+            - ✅ Custom download filenames
+            - ✅ High-quality PNG output
+            
+            ### Tips
+            
+            - Use high-resolution source images for best results
+            - Direct image URLs work best (JPG, PNG, WebP)
+            - The highest quality detected face is used as the main subject
+            """)
     
-    # Footer with instructions
-    st.divider()
-    with st.expander("ℹ️ How it works"):
-        st.markdown("""
-        ### Smart Resizing Logic
+    # ============== TAB 2: TAG FINDER ==============
+    with tab2:
+        st.markdown("### 🏷️ Automatic Tag Finder")
+        st.markdown("Paste your article text below to automatically find matching tags from detak.media database.")
         
-        This tool uses intelligent algorithms to process images for optimal 16:9 display:
+        st.divider()
         
-        - **Face Detection:** Uses advanced multi-cascade detection with quality scoring
-        - **Smart Crop:** Scales image to fill 1920x1080, then crops with face positioned perfectly
-        - **Safety Margins:** Ensures heads are never cut off with 60% top margin
-        - **Center Crop:** If no face is detected, performs a center crop
+        # Article text input
+        article_text = st.text_area(
+            "📝 Article Text",
+            placeholder="Paste your article text here...",
+            height=300,
+            help="Paste the full article text. The tool will find all matching tags (case insensitive, whole words only)."
+        )
         
-        ### Features
+        # Find tags button (with auto-update check)
+        col_find1, col_find2, col_find3 = st.columns([1, 2, 1])
+        with col_find2:
+            find_button = st.button("🔍 Find Tags", type="primary", use_container_width=True)
         
-        - ✅ Multi-cascade face detection for better accuracy
-        - ✅ Quality scoring to filter false positives
-        - ✅ Smart positioning with safety margins
-        - ✅ Custom download filenames
-        - ✅ High-quality PNG output
+        # Process tag finding
+        if find_button:
+            if not article_text:
+                st.warning("⚠️ Please enter article text first")
+            else:
+                # Step 1: Auto-check for tag updates
+                with st.spinner("� Checking for tag updates..."):
+                    success, message = update_tags_from_detak()
+                    if success:
+                        st.info("✅ Tags updated from detak.media")
+                        # Reload tags after update
+                        if 'tags_list' in st.session_state:
+                            del st.session_state['tags_list']
+                    # If update fails, continue with existing tags
+                
+                # Step 2: Search for matching tags
+                with st.spinner("�🔍 Searching for matching tags..."):
+                    # Load tags if not already loaded
+                    if 'tags_list' not in st.session_state:
+                        st.session_state['tags_list'] = load_tags_from_file()
+                    
+                    tags_list = st.session_state['tags_list']
+                    
+                    if not tags_list:
+                        st.error("❌ No tags found in tags.txt. Please check the file.")
+                    else:
+                        # Find matching tags
+                        matching_tags = find_matching_tags(article_text, tags_list)
+                        
+                        if matching_tags:
+                            st.success(f"✅ Found {len(matching_tags)} matching tag(s)!")
+                            
+                            # Display as comma-separated
+                            tags_output = ", ".join(matching_tags)
+                            
+                            st.divider()
+                            st.markdown("### 📋 Matching Tags:")
+                            st.code(tags_output, language="text")
+                            
+                            # Copy button (using text area for easy copying)
+                            st.text_area(
+                                "Copy tags from here:",
+                                value=tags_output,
+                                height=100,
+                                help="Select all and copy (Ctrl+A, Ctrl+C)"
+                            )
+                        else:
+                            st.info("ℹ️ No matching tags found in the article text.")
         
-        ### Tips
-        
-        - Use high-resolution source images for best results
-        - Direct image URLs work best (JPG, PNG, WebP)
-        - The highest quality detected face is used as the main subject
-        """)
+        # Info section
+        st.divider()
+        with st.expander("ℹ️ How Tag Finder Works"):
+            st.markdown("""
+            ### Tag Matching Process
+            
+            1. **Auto-Update:** Checks detak.media for new tags via `testing.py`
+            2. **Load Tags:** Reads all available tags from `tags.txt`
+            3. **Word Boundary Matching:** Searches for COMPLETE WORD matches only
+            4. **Output:** Displays all matching tags separated by commas
+            
+            ### Matching Rules
+            
+            - ✅ **Whole words only** - "Persib" matches "Persib Bandung"
+            - ✅ **Case insensitive** - "persib" matches "Persib"
+            - ❌ **No partial matches** - "emas" will NOT match "memastikan"
+            - ❌ **No substring matches** - "AI" will NOT match "meraih"
+            
+            ### Features
+            
+            - ✅ Automatic tag database updates before each search
+            - ✅ Word boundary validation (prevents false positives)
+            - ✅ Comma-separated output for easy copying
+            - ✅ No duplicate tags
+            
+            ### Examples
+            
+            **Article:** "Persib Bandung meraih kemenangan emas"
+            - ✅ Matches: "Persib Bandung", "Persib"
+            - ❌ Does NOT match: "AI" (from "meraih"), "emas" (standalone word, not in tags)
+            """)
 
 
 def display_results(original_img, processed_img, method, original_w, original_h):
