@@ -338,28 +338,78 @@ def find_matching_tags(article_text: str, tags: list) -> list:
 
 def update_tags_from_detak() -> tuple[bool, str]:
     """
-    Run testing.py to update tags from detak.media.
+    Update tags from detak.media API directly.
     
     Returns:
         Tuple of (success: bool, message: str)
     """
+    base_url = "https://detak.media/wp-json/wp/v2/tags"
+    checkpoint_file = "last_tag_id.txt"
+    output_file = "tags.txt"
+
+    # 1. Read last known ID
+    last_known_id = 0
+    if os.path.exists(checkpoint_file):
+        try:
+            with open(checkpoint_file, "r") as f:
+                content = f.read().strip()
+                if content.isdigit():
+                    last_known_id = int(content)
+        except Exception as e:
+            return False, f"Error reading checkpoint: {e}"
+
+    new_tags = []
+    page = 1
+    keep_fetching = True
+    highest_id_in_session = last_known_id 
+
     try:
-        # Run testing.py script
-        result = subprocess.run(
-            ['python', 'testing.py'],
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-        
-        if result.returncode == 0:
-            return True, "Tags updated successfully!"
+        while keep_fetching:
+            params = {
+                'per_page': 100,
+                'page': page,
+                'orderby': 'id',
+                'order': 'desc' 
+            }
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(base_url, params=params, headers=headers, timeout=30)
+
+            if response.status_code == 200:
+                data = response.json()
+                if not data:
+                    break 
+
+                for item in data:
+                    current_id = item['id']
+                    if current_id > highest_id_in_session:
+                        highest_id_in_session = current_id
+
+                    if current_id > last_known_id:
+                        new_tags.append(item['name'])
+                    else:
+                        keep_fetching = False
+                        break 
+                
+                if keep_fetching:
+                    page += 1
+            else:
+                return False, f"API Error: {response.status_code}"
+
+        # 2. Save new tags
+        if new_tags:
+            with open(output_file, "a", encoding="utf-8") as f:
+                for tag in new_tags:
+                    f.write(tag + "\n")
+            
+            with open(checkpoint_file, "w") as f:
+                f.write(str(highest_id_in_session))
+            
+            return True, f"Found and added {len(new_tags)} new tags!"
         else:
-            return False, f"Error updating tags: {result.stderr}"
-    except subprocess.TimeoutExpired:
-        return False, "Update timeout - please try again"
+            return True, "No new tags found."
+
     except Exception as e:
-        return False, f"Error running update: {str(e)}"
+        return False, f"Error updating tags: {str(e)}"
 
 
 # ============== Streamlit UI ==============
@@ -412,11 +462,21 @@ def main():
     
     # ============== TAB 1: IMAGE RESIZER ==============
     with tab1:
-        url_input = st.text_input(
-            "🔗 Image URL",
-            placeholder="Paste the direct image URL here (e.g., https://example.com/image.jpg)",
-            help="Enter the direct URL to an image. Supports JPG, PNG, and WebP formats."
-        )
+        col_upload, col_url = st.columns(2)
+        
+        with col_upload:
+            uploaded_file = st.file_uploader(
+                "📤 Upload Image",
+                type=["jpg", "jpeg", "png", "webp"],
+                help="Upload an image from your computer."
+            )
+            
+        with col_url:
+            url_input = st.text_input(
+                "🔗 Image URL",
+                placeholder="Or paste image URL here...",
+                help="Enter the direct URL to an image."
+            )
         
         # Title input for download filename
         title_input = st.text_input(
@@ -432,33 +492,49 @@ def main():
             st.session_state['download_title'] = ''
         
         # Process button
-        col1, col2, col3 = st.columns([1, 2, 1])
+        col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
         
-        with col2:
+        with col_btn2:
             process_button = st.button("🚀 Process Image", type="primary", use_container_width=True)
         
-        # Handle image URL
+        # Handle image source
         if process_button:
-            if not url_input:
-                st.error("⚠️ Please enter an image URL")
-            elif not url_input.startswith(('http://', 'https://')):
-                st.error("⚠️ Please enter a valid URL starting with http:// or https://")
-            else:
+            original_img = None
+            source_name = ""
+            
+            if uploaded_file is not None:
                 try:
-                    with st.spinner("📥 Downloading image..."):
-                        original_img = load_image_from_url(url_input)
-                    
+                    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+                    original_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                    source_name = f"Uploaded File: {uploaded_file.name}"
+                except Exception as e:
+                    st.error(f"❌ Error loading uploaded file: {e}")
+            elif url_input:
+                if not url_input.startswith(('http://', 'https://')):
+                    st.error("⚠️ Please enter a valid URL starting with http:// or https://")
+                else:
+                    try:
+                        with st.spinner("📥 Downloading image..."):
+                            original_img = load_image_from_url(url_input)
+                            source_name = "URL"
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
+            else:
+                st.error("⚠️ Please upload a file or enter an image URL")
+                
+            if original_img is not None:
+                try:
                     original_h, original_w = original_img.shape[:2]
                     
                     with st.spinner("🔍 Detecting faces and processing..."):
                         processed_img, method = process_image(original_img)
                     
                     st.session_state['processed_image'] = processed_img
-                    st.session_state['processing_method'] = method
+                    st.session_state['processing_method'] = f"{method} (Source: {source_name})"
                     
                     st.success("✅ Image processed successfully!")
                     
-                    display_results(original_img, processed_img, method, original_w, original_h)
+                    display_results(original_img, processed_img, st.session_state['processing_method'], original_w, original_h)
                     
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
@@ -542,17 +618,21 @@ def main():
                 st.warning("⚠️ Please enter article text first")
             else:
                 # Step 1: Auto-check for tag updates
-                with st.spinner("� Checking for tag updates..."):
+                with st.spinner("Checking for tag updates..."):
                     success, message = update_tags_from_detak()
                     if success:
-                        st.info("✅ Tags updated from detak.media")
-                        # Reload tags after update
-                        if 'tags_list' in st.session_state:
-                            del st.session_state['tags_list']
-                    # If update fails, continue with existing tags
+                        if "added" in message.lower():
+                            st.info(f"✅ {message}")
+                            # Force reload tags from file next time
+                            if 'tags_list' in st.session_state:
+                                del st.session_state['tags_list']
+                        else:
+                            st.info("ℹ️ No new tags to add.")
+                    else:
+                        st.error(f"❌ {message}")
                 
                 # Step 2: Search for matching tags
-                with st.spinner("�🔍 Searching for matching tags..."):
+                with st.spinner("Searching for matching tags..."):
                     # Load tags if not already loaded
                     if 'tags_list' not in st.session_state:
                         st.session_state['tags_list'] = load_tags_from_file()
@@ -591,7 +671,7 @@ def main():
             st.markdown("""
             ### Tag Matching Process
             
-            1. **Auto-Update:** Checks detak.media for new tags via `testing.py`
+            1. **Auto-Update:** Checks detak.media for new tags directly via API
             2. **Load Tags:** Reads all available tags from `tags.txt`
             3. **Word Boundary Matching:** Searches for COMPLETE WORD matches only
             4. **Output:** Displays all matching tags separated by commas
@@ -605,7 +685,7 @@ def main():
             
             ### Features
             
-            - ✅ Automatic tag database updates before each search
+            - ✅ Automatic recursive tag database updates before each search
             - ✅ Word boundary validation (prevents false positives)
             - ✅ Comma-separated output for easy copying
             - ✅ No duplicate tags
