@@ -13,6 +13,7 @@ from io import BytesIO
 import re
 import os
 import subprocess
+from streamlit_cropper import st_cropper
 
 # Constants
 TARGET_WIDTH = 1920
@@ -50,6 +51,10 @@ def load_image_from_url(url: str) -> np.ndarray:
         return img
     except requests.exceptions.Timeout:
         raise Exception("Request timed out. Please check your connection and try again.")
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code in [410, 403, 404]:
+            raise Exception("URL expired or inaccessible. Please download the image manually and upload it, or use a permanent URL.")
+        raise Exception(f"Failed to download image: {str(e)}")
     except requests.exceptions.RequestException as e:
         raise Exception(f"Failed to download image: {str(e)}")
 
@@ -163,6 +168,87 @@ def has_human_skin_tone(face_region: np.ndarray) -> bool:
     return skin_ratio > 0.15
 
 
+def create_crop_preview(img: np.ndarray, crop_x: int, crop_y: int, 
+                        target_w: int = TARGET_WIDTH, target_h: int = TARGET_HEIGHT) -> np.ndarray:
+    """
+    Create a preview image with darkened areas outside the crop box.
+    
+    Args:
+        img: Scaled image (already resized to fill target dimensions)
+        crop_x: X coordinate of crop box top-left corner
+        crop_y: Y coordinate of crop box top-left corner
+        target_w: Width of crop box (default 1920)
+        target_h: Height of crop box (default 1080)
+        
+    Returns:
+        Preview image with darkened overlay and bright crop box
+    """
+    h, w = img.shape[:2]
+    
+    # Create a copy for preview
+    preview = img.copy()
+    
+    # Create dark overlay (semi-transparent black)
+    overlay = np.zeros_like(preview, dtype=np.uint8)
+    
+    # Darken the entire image
+    darkened = cv2.addWeighted(preview, 0.3, overlay, 0.7, 0)
+    
+    # Copy the bright crop area back
+    crop_x_end = min(crop_x + target_w, w)
+    crop_y_end = min(crop_y + target_h, h)
+    
+    darkened[crop_y:crop_y_end, crop_x:crop_x_end] = preview[crop_y:crop_y_end, crop_x:crop_x_end]
+    
+    # Draw crop box rectangle (thinner border)
+    cv2.rectangle(darkened, (crop_x, crop_y), (crop_x_end, crop_y_end), 
+                  (0, 255, 255), 2)  # Yellow border, 2px
+    
+    # Add smaller corner markers
+    corner_size = 15
+    corner_color = (0, 255, 255)
+    corner_thickness = 2
+    
+    # Top-left corner
+    cv2.line(darkened, (crop_x, crop_y), (crop_x + corner_size, crop_y), corner_color, corner_thickness)
+    cv2.line(darkened, (crop_x, crop_y), (crop_x, crop_y + corner_size), corner_color, corner_thickness)
+    
+    # Top-right corner
+    cv2.line(darkened, (crop_x_end, crop_y), (crop_x_end - corner_size, crop_y), corner_color, corner_thickness)
+    cv2.line(darkened, (crop_x_end, crop_y), (crop_x_end, crop_y + corner_size), corner_color, corner_thickness)
+    
+    # Bottom-left corner
+    cv2.line(darkened, (crop_x, crop_y_end), (crop_x + corner_size, crop_y_end), corner_color, corner_thickness)
+    cv2.line(darkened, (crop_x, crop_y_end), (crop_x, crop_y_end - corner_size), corner_color, corner_thickness)
+    
+    # Bottom-right corner
+    cv2.line(darkened, (crop_x_end, crop_y_end), (crop_x_end - corner_size, crop_y_end), corner_color, corner_thickness)
+    cv2.line(darkened, (crop_x_end, crop_y_end), (crop_x_end, crop_y_end - corner_size), corner_color, corner_thickness)
+    
+    # Add smaller dimension text
+    text = f"{target_w}x{target_h}"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.8
+    font_thickness = 2
+    text_size = cv2.getTextSize(text, font, font_scale, font_thickness)[0]
+    
+    # Position text at top center of crop box
+    text_x = crop_x + (target_w - text_size[0]) // 2
+    text_y = crop_y + 30
+    
+    # Add background for text
+    cv2.rectangle(darkened, 
+                  (text_x - 8, text_y - text_size[1] - 8),
+                  (text_x + text_size[0] + 8, text_y + 8),
+                  (0, 0, 0), -1)
+    
+    cv2.putText(darkened, text, (text_x, text_y), font, font_scale, 
+                (0, 255, 255), font_thickness)
+    
+    return darkened
+
+
+
 def smart_crop_with_face(img: np.ndarray, faces: list) -> np.ndarray:
     """
     Smart crop image to 1920x1080 with face CENTERED.
@@ -225,6 +311,40 @@ def smart_crop_with_face(img: np.ndarray, faces: list) -> np.ndarray:
     result = resized[crop_y:crop_y + TARGET_HEIGHT, crop_x:crop_x + TARGET_WIDTH]
     
     return result
+
+
+def visual_crop_interface(img: np.ndarray, initial_box: tuple = None) -> Image.Image:
+    """
+    Visual cropping interface using streamlit-cropper.
+    
+    Args:
+        img: Scaled/resized image ready for cropping (numpy array)
+        initial_box: Tuple of (left, right, top, bottom) for initial crop box
+        
+    Returns:
+        PIL Image of the cropped result
+    """
+    pil_img = convert_cv2_to_pil(img)
+    
+    st.markdown("### 🎯 Adjust Crop Box")
+    st.caption("Drag the box to adjust crop. The aspect ratio is locked to 16:9.")
+    
+    # st_cropper returns the cropped image directly
+    cropped_img = st_cropper(
+        pil_img,
+        realtime_update=True,
+        box_color='#FFFF00',
+        aspect_ratio=(16, 9),
+        default_coords=initial_box,  # (left, right, top, bottom)
+        key="cropper_widget"
+    )
+    
+    return cropped_img
+
+
+
+
+
 
 
 def process_image(img: np.ndarray) -> tuple[np.ndarray, str]:
@@ -498,7 +618,15 @@ def main():
             process_button = st.button("🚀 Process Image", type="primary", use_container_width=True)
         
         # Handle image source
+        # Handle image source
+        # Handle image source
         if process_button:
+            # Clear previous state
+            for key in ['ready_to_crop', 'scaled_image', 'final_image', 'download_mode', 
+                       'original_image', 'source_name', 'original_w', 'original_h', 'initial_box']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
             original_img = None
             source_name = ""
             
@@ -526,43 +654,108 @@ def main():
                 try:
                     original_h, original_w = original_img.shape[:2]
                     
-                    with st.spinner("🔍 Detecting faces and processing..."):
-                        processed_img, method = process_image(original_img)
+                    st.divider()
                     
-                    st.session_state['processed_image'] = processed_img
-                    st.session_state['processing_method'] = f"{method} (Source: {source_name})"
+                    # Step 1: Detect faces for initial position
+                    faces = detect_faces(original_img)
                     
-                    st.success("✅ Image processed successfully!")
+                    # Step 2: Scale image to fill target dimensions
+                    h, w = original_img.shape[:2]
+                    scale_w = TARGET_WIDTH / w
+                    scale_h = TARGET_HEIGHT / h
+                    scale = max(scale_w, scale_h)  # Use larger scale to fill
                     
-                    display_results(original_img, processed_img, st.session_state['processing_method'], original_w, original_h)
+                    new_width = int(w * scale)
+                    new_height = int(h * scale)
+                    scaled_img = cv2.resize(original_img, (new_width, new_height), 
+                                           interpolation=cv2.INTER_LANCZOS4)
+                    
+                    # Calculate initial crop position based on faces
+                    initial_crop_x, initial_crop_y = 0, 0
+                    if len(faces) > 0:
+                        face = faces[0]
+                        face_x, face_y, face_w, face_h = face
+                        # Scale face to new dimensions
+                        scaled_face_x = int(face_x * scale)
+                        scaled_face_y = int(face_y * scale)
+                        scaled_face_w = int(face_w * scale)
+                        scaled_face_h = int(face_h * scale)
+                        
+                        face_center_x = scaled_face_x + scaled_face_w // 2
+                        face_center_y = scaled_face_y + scaled_face_h // 2
+                        
+                        initial_crop_x = face_center_x - TARGET_WIDTH // 2
+                        initial_crop_y = face_center_y - TARGET_HEIGHT // 2
+                        
+                    else:
+                        initial_crop_x = (new_width - TARGET_WIDTH) // 2
+                        initial_crop_y = (new_height - TARGET_HEIGHT) // 2
+                    
+                    # Ensure bounds
+                    initial_crop_x = int(max(0, min(initial_crop_x, new_width - TARGET_WIDTH)))
+                    initial_crop_y = int(max(0, min(initial_crop_y, new_height - TARGET_HEIGHT)))
+                    
+                    # Define box for st_cropper (left, top, left+w, top+h) ??
+                    # Search result said (xl, xr, yt, yb)... which implies (left, right, top, bottom)
+                    # Let's try matching the search result:
+                    # box = (left, right, top, bottom)
+                    initial_box = (
+                        initial_crop_x, 
+                        initial_crop_x + TARGET_WIDTH,
+                        initial_crop_y,
+                        initial_crop_y + TARGET_HEIGHT
+                    )
+                    
+                    # Store everything needed for session
+                    st.session_state['ready_to_crop'] = True
+                    st.session_state['scaled_image'] = scaled_img
+                    st.session_state['original_image'] = original_img
+                    st.session_state['source_name'] = source_name
+                    st.session_state['original_w'] = original_w
+                    st.session_state['original_h'] = original_h
+                    st.session_state['initial_box'] = initial_box
+                    st.session_state['download_mode'] = False
                     
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
         
-        # Show previously processed image if exists
-        elif 'processed_image' in st.session_state:
-            st.divider()
-            st.markdown("### 📋 Previous Result")
-            st.markdown(f"**🧠 Processing Method:** {st.session_state.get('processing_method', 'N/A')}")
+        if st.session_state.get('ready_to_crop', False) and 'scaled_image' in st.session_state:
+            # === INTERACTIVE CROPPER VIEW ===
+            try:
+                st.divider()
+                
+                scaled_img = st.session_state['scaled_image']
+                initial_box = st.session_state.get('initial_box')
+                
+                # Visual Cropper
+                cropped_img_preview = visual_crop_interface(scaled_img, initial_box)
+                
+                st.divider()
+                
+                # Prepare direct download
+                # We assume the user is happy with the crop if they stop dragging
+                
+                # Resize to target
+                final_img = cropped_img_preview.resize((TARGET_WIDTH, TARGET_HEIGHT), Image.LANCZOS)
+                
+                # Convert to bytes
+                buf = BytesIO()
+                final_img.save(buf, format="PNG")
+                byte_im = buf.getvalue()
+                
+                col_centered = st.columns([1, 2, 1])
+                with col_centered[1]:
+                    st.download_button(
+                        label="⬇️ Download Result (1920x1080)",
+                        data=byte_im,
+                        file_name=get_download_filename(title_input),
+                        mime="image/png",
+                        type="primary",
+                        use_container_width=True
+                    )
             
-            st.image(
-                convert_cv2_to_pil(st.session_state['processed_image']),
-                caption="Previously processed image (1920x1080)",
-                use_container_width=True
-            )
-            
-            download_bytes = get_image_download_bytes(st.session_state['processed_image'])
-            download_title = st.session_state.get('download_title', '')
-            filename = get_download_filename(download_title)
-            
-            st.download_button(
-                label="📥 Download PNG",
-                data=download_bytes,
-                file_name=filename,
-                mime="image/png",
-                type="primary",
-                use_container_width=True
-            )
+            except Exception as e:
+                st.error(f"❌ Error in crop interface: {str(e)}")
         
         # Footer with instructions
         st.divider()
