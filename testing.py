@@ -2,7 +2,7 @@ import requests
 import os
 
 # --- KONFIGURASI ---
-base_url = "https://detak.media/wp-json/wp/v2/tags"
+base_url = "https://ihram.co.id/wp-json/wp/v2/tags"
 checkpoint_file = "last_tag_id.txt"  # File penyimpan ID terakhir (untuk logika sistem)
 output_file = "tags.txt"             # File hasil text (untuk dibaca manusia)
 
